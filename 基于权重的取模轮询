@@ -1,0 +1,57 @@
+protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation invocation) {  
+        String key = invokers.get(0).getUrl().getServiceKey() + "." + invocation.getMethodName();  
+        int length = invokers.size(); // 总个数  
+        int maxWeight = 0; // 最大权重  
+        int minWeight = Integer.MAX_VALUE; // 最小权重  
+        for (int i = 0; i < length; i++) {  
+            int weight = getWeight(invokers.get(i), invocation);  
+            maxWeight = Math.max(maxWeight, weight); // 累计最大权重  
+            minWeight = Math.min(minWeight, weight); // 累计最小权重  
+        }  
+        if (maxWeight > 0 && minWeight < maxWeight) { // 权重不一样  
+            AtomicPositiveInteger weightSequence = weightSequences.get(key);  
+            if (weightSequence == null) {  
+                weightSequences.putIfAbsent(key, new AtomicPositiveInteger());  
+                weightSequence = weightSequences.get(key);  
+            }  
+            List<Invoker<?>> listInvoker = weightInvokers.get(key);  
+            if (listInvoker == null) {  
+                weightInvokers.putIfAbsent(key, new ArrayList<Invoker<?>>());  
+                listInvoker = weightInvokers.get(key);  
+            }  
+            synchronized(listInvoker){  
+                if(listInvoker.isEmpty()){  
+                     // 重新构建  
+                     int currentWeight = weightSequence.getAndIncrement() % maxWeight;  
+                     for (Invoker<T> invoker : invokers) { // 筛选权重值大于等于当前权重基数的Invoker  
+                         if (getWeight(invoker, invocation) >= currentWeight) {  
+                             listInvoker.add(invoker);  
+                         }  
+                     }  
+                }  
+                return invokers.remove(0);  
+            }  
+        }  
+        AtomicPositiveInteger sequence = sequences.get(key);  
+        if (sequence == null) {  
+            sequences.putIfAbsent(key, new AtomicPositiveInteger());  
+            sequence = sequences.get(key);  
+        }  
+        // 取模轮循  
+        return invokers.get(sequence.getAndIncrement() % length);  
+    }  
+    
+    【---------------算法思想调用矩阵---------------】
+    I1 I2 I3 I4
+       I2 I3 I4
+          I3 I4
+             I4
+    
+    
+    
+    
+    
+    
+    
+    
+    

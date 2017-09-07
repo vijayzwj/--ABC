@@ -1,0 +1,70 @@
+public void doSaveProperties(long version) {
+        if(version < lastCacheChanged.get()){
+            return;
+        }
+        if (file == null) {
+            return;
+        }
+        Properties newProperties = new Properties();
+        // 保存之前先读取一遍，防止多个注册中心之间冲突
+        InputStream in = null;
+        try {
+            if (file.exists()) {
+                in = new FileInputStream(file);
+                newProperties.load(in);
+            }
+        } catch (Throwable e) {
+            logger.warn("Failed to load registry store file, cause: " + e.getMessage(), e);
+        } finally {
+            if (in != null) {
+                try {
+                    in.close();
+                } catch (IOException e) {
+                    logger.warn(e.getMessage(), e);
+                }
+            }
+        }     
+     // 保存
+        try {
+			newProperties.putAll(properties);
+            File lockfile = new File(file.getAbsolutePath() + ".lock");
+            if (!lockfile.exists()) {
+            	lockfile.createNewFile();
+            }
+            RandomAccessFile raf = new RandomAccessFile(lockfile, "rw");
+            try {
+                FileChannel channel = raf.getChannel();
+                try {
+                    FileLock lock = channel.tryLock();
+                	if (lock == null) {
+                        throw new IOException("Can not lock the registry cache file " + file.getAbsolutePath() + ", ignore and retry later, maybe multi java process use the file, please config: dubbo.registry.file=xxx.properties");
+                    }
+                	// 保存
+                    try {
+                    	if (! file.exists()) {
+                            file.createNewFile();
+                        }
+                        FileOutputStream outputFile = new FileOutputStream(file);  
+                        try {
+                            newProperties.store(outputFile, "Dubbo Registry Cache");
+                        } finally {
+                        	outputFile.close();
+                        }
+                    } finally {
+                    	lock.release();
+                    }
+                } finally {
+                    channel.close();
+                }
+            } finally {
+                raf.close();
+            }
+        } catch (Throwable e) {
+            if (version < lastCacheChanged.get()) {
+                return;
+            } else {
+                registryCacheExecutor.execute(new SaveProperties(lastCacheChanged.incrementAndGet()));
+            }
+            logger.warn("Failed to save registry store file, cause: " + e.getMessage(), e);
+        }
+    }

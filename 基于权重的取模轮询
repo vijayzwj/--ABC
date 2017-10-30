@@ -29,7 +29,7 @@ protected <T> Invoker<T> doSelect(List<Invoker<T>> invokers, URL url, Invocation
                          }  
                      }  
                 }  
-                return invokers.remove(0);  
+                return listInvoker.remove(0);  
             }  
         }  
         AtomicPositiveInteger sequence = sequences.get(key);  

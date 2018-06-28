@@ -1,0 +1,229 @@
+package test;
+
+import com.alibaba.dubbo.common.utils.AtomicPositiveInteger;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicInteger;
+
+public class NodeDemo {
+
+    static class Node {
+
+        private String ip;
+        private int    weight;
+
+        public Node(String ip, int weight) {
+            this.ip = ip;
+            this.weight = weight;
+        }
+
+        public String toString() {
+            return new StringBuilder(ip).append("->").append(weight).toString();
+        }
+    }
+
+    static class IntegerWrapper {
+
+        private int value;
+
+        public IntegerWrapper(int value) {
+            this.value = value;
+        }
+
+        public int getValue() {
+            return value;
+        }
+
+        public void setValue(int value) {
+            this.value = value;
+        }
+
+        public void decrement() {
+            this.value--;
+        }
+
+    }
+
+    class StatItem {
+
+        private String name;
+
+        private long lastResetTime;
+
+        private long interval;
+
+        private AtomicInteger token;
+
+        private int rate;
+
+        StatItem(String name, int rate, long interval) {
+            this.name = name;
+            this.rate = rate;
+            this.interval = interval;
+            this.lastResetTime = System.currentTimeMillis();
+            this.token = new AtomicInteger(rate);
+        }
+
+        public boolean isAllowable() {
+            long now = System.currentTimeMillis();
+            if (now > lastResetTime + interval) {
+                token.set(rate);
+                lastResetTime = now;
+            }
+
+            int value = token.get();
+            boolean flag = false;
+            while (value > 0 && !flag) {
+                flag = token.compareAndSet(value, value - 1);
+                value = token.get();
+            }
+
+            return flag;
+        }
+
+        long getLastResetTime() {
+            return lastResetTime;
+        }
+
+        int getToken() {
+            return token.get();
+        }
+
+        public String toString() {
+            return new StringBuilder(32).append("StatItem ")
+                    .append("[name=").append(name).append(", ")
+                    .append("rate = ").append(rate).append(", ")
+                    .append("interval = ").append(interval).append("]")
+                    .toString();
+        }
+
+    }
+
+    static class RoundRobin {
+
+        private final ConcurrentMap<String, AtomicPositiveInteger> sequences = new ConcurrentHashMap<String, AtomicPositiveInteger>();
+
+        public Node select(Node[] nodes, String url) {
+            int maxWeight = Integer.MIN_VALUE;
+            int minWeight = Integer.MAX_VALUE;
+            int length = nodes.length;
+            int weightSum = 0;
+            LinkedHashMap<Node, IntegerWrapper> nodeToWeightMap = new LinkedHashMap<>();
+            for (Node node : nodes) {
+                if (maxWeight < node.weight) {
+                    maxWeight = node.weight;
+                }
+                if (minWeight > node.weight) {
+                    minWeight = node.weight;
+                }
+                if (node.weight > 0) {
+                    weightSum += node.weight;
+                    nodeToWeightMap.put(node, new IntegerWrapper(node.weight));
+                }
+            }
+            AtomicPositiveInteger sequence = sequences.get(url);
+            if (sequence == null) {
+                sequences.putIfAbsent(url, new AtomicPositiveInteger());
+                sequence = sequences.get(url);
+            }
+
+            int currentSequence = sequence.getAndIncrement();
+
+            if (maxWeight > 0 && maxWeight > minWeight) {
+                int mod = currentSequence % weightSum;
+                for (int i = 0; i < maxWeight; i++) {
+                    // 用mod进行pk
+                    for (Map.Entry<Node, IntegerWrapper> entry : nodeToWeightMap.entrySet()) {
+                        IntegerWrapper wrapper = entry.getValue();
+                        Node node = entry.getKey();
+                        if (mod == 0 && wrapper.getValue() > 0) {
+                            return node;
+                        }
+                        if (wrapper.getValue() > 0) {
+                            mod--;
+                            wrapper.decrement();
+                        }
+                    }
+                }
+            }
+            return nodes[currentSequence % length];
+        }
+
+        private ConcurrentHashMap<String, AtomicPositiveInteger> weightSequences = new ConcurrentHashMap<>();
+
+        private ConcurrentHashMap<String, List<Node>>            weightNodes     = new ConcurrentHashMap<>();
+
+        public Node selectV2(Node[] nodes, String url) {
+            int maxWeight = Integer.MIN_VALUE;
+            int minWeight = Integer.MAX_VALUE;
+            int length = nodes.length;
+            for (Node node : nodes) {
+                if (maxWeight < node.weight) {
+                    maxWeight = node.weight;
+                }
+                if (minWeight > node.weight) {
+                    minWeight = node.weight;
+                }
+            }
+
+            if (maxWeight > 0 && maxWeight > minWeight) {
+                AtomicPositiveInteger weightSequence = weightSequences.get(url);
+                if (weightSequence == null) {
+                    weightSequences.putIfAbsent(url, new AtomicPositiveInteger());
+                    weightSequence = weightSequences.get(url);
+                }
+                List<Node> listNodes = weightNodes.get(url);
+                if (listNodes == null) {
+                    weightNodes.putIfAbsent(url, new ArrayList<Node>());
+                    listNodes = weightNodes.get(url);
+                }
+                synchronized (listNodes) {
+                    if (listNodes.isEmpty()) {
+                        // 重新构建
+                        int currentWeight = weightSequence.getAndIncrement() % maxWeight;
+                        for (Node node : nodes) { // 筛选权重值大于等于当前权重基数的Invoker
+                            if (node.weight >currentWeight) {
+                                listNodes.add(node);
+                            }
+                        }
+                    }
+                    return listNodes.remove(0);
+                }
+            }
+            AtomicPositiveInteger sequence = sequences.get(url);
+            if (sequence == null) {
+                sequences.putIfAbsent(url, new AtomicPositiveInteger());
+                sequence = sequences.get(url);
+            }
+            int currentSequence = sequence.getAndIncrement();
+            return nodes[currentSequence % length];
+        }
+
+    }
+
+    public static void main(String[] args) throws Exception {
+
+        Node[] nodes = new Node[3];
+        nodes[0] = new Node("192.168.2.2", 2);
+        nodes[1] = new Node("192.168.2.1", 1);
+        nodes[2] = new Node("192.168.2.3", 3);
+        System.out.println(Arrays.toString(nodes));
+
+        RoundRobin rr = new RoundRobin();
+        for (int i = 0; i < 6; i++) {
+
+            System.out.println("rr.select(nodes,\"ab\") = " + rr.select(nodes, "ab"));
+
+        }
+        System.out.println();
+        for (int i = 0; i < 6; i++) {
+
+            System.out.println("rr.select(nodes,\"ab\") = " + rr.selectV2(nodes, "ab"));
+
+        }
+
+    }
+
+}
